@@ -262,81 +262,101 @@ async function scrapeInstagramProfile(username) {
         // Wait for the post's article element to load
         await postPage.waitForSelector('article', { timeout: 15000 });
         
-        // IMPROVED COMMENTS COUNT EXTRACTION
-        const counts = await postPage.evaluate(() => {
-          // Simple parsing function that just extracts numbers
-          const extractNumber = (str) => {
-            if (!str) return 0;
-            // Just get the first number in the string
-            const match = str.match(/\d+/);
-            return match ? parseInt(match[0]) : 0;
-          };
-
-          let likeCount = 0, commentCount = 0;
-          
-          // APPROACH 1: Look for elements with specific text patterns
-          const allTextElements = document.querySelectorAll('span, div, button');
-          
-          // Process all text elements to find likes and comments separately
-          for (const el of allTextElements) {
-            const text = el.textContent.trim().toLowerCase();
-            
-            // Find likes (make sure it's just likes, not likes and comments)
-            if (text.includes('like') && !text.includes('comment')) {
-              const likesMatch = extractNumber(text);
-              if (likesMatch > 0) {
-                likeCount = likesMatch;
-              }
-            }
-            
-            // Find comments separately
-            if (text.includes('comment') && !text.includes('like')) {
-              const commentsMatch = extractNumber(text);
-              if (commentsMatch > 0) {
-                commentCount = commentsMatch;
-              }
-            }
-          }
-          
-          // APPROACH 2: If we didn't find comments, look for specific elements
-          if (commentCount === 0) {
-            // Look for elements that might contain comment counts
-            const commentElements = Array.from(document.querySelectorAll('span, div'))
-              .filter(el => {
-                const text = el.textContent.trim().toLowerCase();
-                return text.includes('comment') || 
-                       (text.match(/^\d+$/) && el.nextElementSibling && 
-                        el.nextElementSibling.textContent.toLowerCase().includes('comment'));
-              });
-            
-            if (commentElements.length > 0) {
-              commentCount = extractNumber(commentElements[0].textContent);
-            }
-          }
-          
-          // APPROACH 3: If we still didn't find comments, look for specific UI patterns
-          if (commentCount === 0) {
-            // In some Instagram layouts, comments appear after likes in the UI
-            // Find the element with likes first
-            const likeElement = Array.from(document.querySelectorAll('span, div'))
-              .find(el => el.textContent.toLowerCase().includes('like'));
-            
-            if (likeElement) {
-              // Look for the next element that has numbers but not "like"
-              let current = likeElement.nextElementSibling;
-              while (current) {
-                const text = current.textContent.toLowerCase();
-                if (text.match(/\d/) && !text.includes('like')) {
-                  commentCount = extractNumber(text);
-                  break;
-                }
-                current = current.nextElementSibling;
-              }
-            }
-          }
-          
-          return { likeCount, commentCount };
-        });
+       // Inside your post page evaluation code, replace the counts extraction with this
+const counts = await postPage.evaluate(() => {
+  let likeCount = 0, commentCount = 0;
+  
+  // APPROACH 1: Extract from og:description meta tag (most reliable)
+  const ogDescription = document.querySelector('meta[property="og:description"]');
+  if (ogDescription) {
+    const content = ogDescription.getAttribute('content') || '';
+    
+    // The format is typically: "X likes, Y comments - username on Date: "Post text..."
+    const metaMatch = content.match(/(\d+(?:,\d+)*)\s+likes?,\s+(\d+(?:,\d+)*)\s+comments?/i);
+    if (metaMatch) {
+      likeCount = parseInt(metaMatch[1].replace(/,/g, ''));
+      commentCount = parseInt(metaMatch[2].replace(/,/g, ''));
+      return { likeCount, commentCount }; // Return early if we found reliable data
+    }
+  }
+  
+  // APPROACH 2: Extract from page title or other meta tags
+  const ogTitle = document.querySelector('meta[property="og:title"]');
+  if (ogTitle) {
+    const titleContent = ogTitle.getAttribute('content') || '';
+    const titleMatch = titleContent.match(/(\d+(?:,\d+)*)\s+likes?,\s+(\d+(?:,\d+)*)\s+comments?/i);
+    if (titleMatch) {
+      likeCount = parseInt(titleMatch[1].replace(/,/g, ''));
+      commentCount = parseInt(titleMatch[2].replace(/,/g, ''));
+      return { likeCount, commentCount }; // Return early if we found reliable data
+    }
+  }
+  
+  // APPROACH 3: Fallback to DOM parsing if meta tags don't have the info
+  const extractNumber = (str) => {
+    if (!str) return 0;
+    str = str.toLowerCase().trim();
+    
+    // Extract just the part that looks like a count
+    const countMatch = str.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*([km])?/i);
+    if (!countMatch) return 0;
+    
+    const numericPart = parseFloat(countMatch[1].replace(/,/g, ''));
+    const suffix = countMatch[2] ? countMatch[2].toLowerCase() : '';
+    
+    // Apply multiplier if suffix exists
+    if (suffix === 'k') {
+      return Math.round(numericPart * 1000);
+    } else if (suffix === 'm') {
+      return Math.round(numericPart * 1000000);
+    } else {
+      return Math.round(numericPart);
+    }
+  };
+  
+  // Look for specific text patterns for likes
+  const likeElements = Array.from(document.querySelectorAll('span, div, a, button'))
+    .filter(el => {
+      const text = el.textContent.trim().toLowerCase();
+      return text.includes('like') && 
+             text.match(/\d+/) && 
+             !text.includes('comment');
+    });
+  
+  for (const el of likeElements) {
+    const extracted = extractNumber(el.textContent);
+    if (extracted > likeCount && extracted < 100000000) { // Sanity check
+      likeCount = extracted;
+    }
+  }
+  
+  // Look for specific text patterns for comments
+  const commentElements = Array.from(document.querySelectorAll('span, div, a, button'))
+    .filter(el => {
+      const text = el.textContent.trim().toLowerCase();
+      return text.includes('comment') && 
+             text.match(/\d+/) && 
+             !text.includes('like');
+    });
+  
+  for (const el of commentElements) {
+    const extracted = extractNumber(el.textContent);
+    if (extracted > commentCount && extracted < 10000000) { // Sanity check
+      commentCount = extracted;
+    }
+  }
+  
+  // If comment count is still 0, try counting visible comments
+  if (commentCount === 0) {
+    const commentLists = document.querySelectorAll('ul[class*="comment"], div[aria-label*="comment"] ul');
+    if (commentLists.length > 0) {
+      const comments = commentLists[0].querySelectorAll('li');
+      commentCount = Math.max(0, comments.length - 1); // Subtract 1 to exclude potential header
+    }
+  }
+  
+  return { likeCount, commentCount };
+});
         
         post.likes = counts.likeCount;
         post.comments = counts.commentCount;
