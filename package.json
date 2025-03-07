@@ -1,0 +1,14 @@
+{
+    "name": "insta-scraper",
+    "version": "1.0.0",
+    "description": "A Node.js script to scrape an Instagram profile and export data to public/instaurl.json",
+    "main": "scrapeInstagram.js",
+    "scripts": {
+        "scrape": "node scrapeInstagram.js"
+    },
+    "dependencies": {
+        "puppeteer": "^24.4.0"
+    },
+    "author": "",
+    "license": "MIT"
+}
